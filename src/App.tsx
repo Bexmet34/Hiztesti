@@ -234,10 +234,8 @@ function SpeedPulseApp() {
   }, []);
 
   const maskIp = (ip: string) => {
-    if (!ip) return '***.***.***.***';
-    const parts = ip.split('.');
-    if (parts.length !== 4) return ip;
-    return `${parts[0]}.***.***.${parts[3]}`;
+    if (!ip) return 'Detecting...';
+    return ip;
   };
 
   const currentGaugeValue = testState === 'download' ? downloadSpeed : 
@@ -456,12 +454,12 @@ function SpeedPulseApp() {
                   <div className="flex flex-col">
                     <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">IP ADDRESS</span>
                     <span className="text-sm font-mono text-gray-300">
-                      {isLoadingInfo ? '***.***.***.***' : maskIp(networkInfo?.ip || '')}
+                      {isLoadingInfo ? 'Detecting...' : maskIp(networkInfo?.ip || 'Unknown')}
                     </span>
                   </div>
-                  <div className="bg-success/10 text-success px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
-                    <Shield className="w-3 h-3" />
-                    Protected
+                  <div className="bg-accent/10 text-accent px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                    <Globe className="w-3 h-3" />
+                    Detected
                   </div>
                 </div>
               </div>
