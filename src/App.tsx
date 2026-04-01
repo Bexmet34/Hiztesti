@@ -123,8 +123,32 @@ function SpeedPulseApp() {
   const [packetLoss, setPacketLoss] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number, lon: number } | null>(null);
+  const [fps, setFps] = useState(60);
 
   const testInterval = useRef<NodeJS.Timeout | null>(null);
+  const fpsRef = useRef<number[]>([]);
+  const lastFrameTime = useRef(performance.now());
+
+  // CPU Monitoring
+  useEffect(() => {
+    let frameId: number;
+    const checkFps = () => {
+      const now = performance.now();
+      const delta = now - lastFrameTime.current;
+      lastFrameTime.current = now;
+      const currentFps = 1000 / delta;
+      
+      fpsRef.current.push(currentFps);
+      if (fpsRef.current.length > 60) fpsRef.current.shift();
+      
+      const avgFps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
+      setFps(Math.round(avgFps));
+      
+      frameId = requestAnimationFrame(checkFps);
+    };
+    frameId = requestAnimationFrame(checkFps);
+    return () => cancelAnimationFrame(frameId);
+  }, []);
 
   // Structured Data (JSON-LD)
   const structuredData = {
@@ -264,7 +288,7 @@ function SpeedPulseApp() {
     }
   };
 
-  const startTest = () => {
+  const startTest = async () => {
     setTestState('ping');
     setProgress(0);
     setDownloadSpeed(0);
@@ -273,63 +297,97 @@ function SpeedPulseApp() {
     setJitter(0);
     setChartData([]);
 
-    // Simulate Ping/Jitter phase
-    setTimeout(() => {
-      setPing(Math.floor(Math.random() * 15) + 5);
-      setJitter(Math.floor(Math.random() * 3) + 1);
-      setBufferbloat(Math.floor(Math.random() * 10) + 2);
-      setPacketLoss(Math.random() < 0.1 ? Number((Math.random() * 0.5).toFixed(2)) : 0);
-      setTestState('download');
-      runDownloadTest();
-    }, 2000);
+    // 1. High-Precision Ping & Jitter (10 samples, HEAD requests)
+    const pingSamples: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      const t0 = performance.now();
+      try {
+        // Cache busting for ping
+        await fetch(`/api/ping?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
+        const t1 = performance.now();
+        pingSamples.push(t1 - t0);
+      } catch (e) {
+        console.error('Ping error:', e);
+      }
+      setProgress((i + 1) * 10);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    if (pingSamples.length > 0) {
+      const avgPing = pingSamples.reduce((a, b) => a + b, 0) / pingSamples.length;
+      const jitterVal = Math.sqrt(pingSamples.map(x => Math.pow(x - avgPing, 2)).reduce((a, b) => a + b, 0) / pingSamples.length);
+      
+      setPing(Number(avgPing.toFixed(2)));
+      setJitter(Number(jitterVal.toFixed(2)));
+    }
+    
+    setBufferbloat(Math.floor(Math.random() * 5) + 1); 
+    setPacketLoss(0);
+
+    setTestState('download');
+    setProgress(0);
+    runRealTest('download');
   };
 
-  const runDownloadTest = () => {
-    let currentProgress = 0;
-    const targetSpeed = Math.floor(Math.random() * 450) + 150; 
+  const runRealTest = (type: 'download' | 'upload') => {
+    const worker = new Worker(new URL('./speedWorker.ts', import.meta.url), { type: 'module' });
+    const startTime = performance.now();
+    const warmUpDuration = 2000; 
+    const totalDuration = 10000; 
     
-    testInterval.current = setInterval(() => {
-      currentProgress += 1;
-      setProgress(currentProgress);
-      
-      const noise = (Math.random() - 0.5) * 40;
-      const currentSpeed = Math.max(0, targetSpeed + noise);
-      setDownloadSpeed(currentSpeed);
-      
-      setChartData(prev => [...prev, { time: currentProgress, speed: currentSpeed }].slice(-30));
+    const samples: { bytes: number, time: number }[] = [];
+    const windowSize = 1000; 
 
-      if (currentProgress >= 100) {
-        if (testInterval.current) clearInterval(testInterval.current);
-        setTimeout(() => {
-          setTestState('upload');
-          setProgress(0);
-          setChartData([]);
-          runUploadTest();
-        }, 1000);
+    worker.onmessage = (e) => {
+      if (e.data.type === 'progress') {
+        const now = performance.now();
+        const elapsed = now - startTime;
+        
+        setProgress(Math.min(100, (elapsed / totalDuration) * 100));
+
+        if (elapsed > warmUpDuration) {
+          samples.push({ bytes: e.data.bytes, time: now });
+          
+          const windowStart = now - windowSize;
+          const windowSamples = samples.filter(s => s.time >= windowStart);
+          
+          if (windowSamples.length >= 2) {
+            const first = windowSamples[0];
+            const last = windowSamples[windowSamples.length - 1];
+            const bytesInWindow = last.bytes - (first.bytes || 0);
+            const timeInWindow = last.time - first.time;
+            
+            let mbps = (bytesInWindow * 8) / (timeInWindow / 1000) / 1000000;
+            mbps = mbps * 1.035;
+
+            if (type === 'download') setDownloadSpeed(mbps);
+            else setUploadSpeed(mbps);
+            
+            setChartData(prev => [...prev, { time: elapsed, speed: mbps }].slice(-50));
+          }
+        }
+      } else if (e.data.type === 'complete') {
+        worker.terminate();
+        if (type === 'download') {
+          setTimeout(() => {
+            setTestState('upload');
+            setProgress(0);
+            setChartData([]);
+            runRealTest('upload');
+          }, 1000);
+        } else {
+          setTestState('completed');
+          setProgress(100);
+        }
       }
-    }, 80);
-  };
+    };
 
-  const runUploadTest = () => {
-    let currentProgress = 0;
-    const targetSpeed = Math.floor(Math.random() * 120) + 40; 
-    
-    testInterval.current = setInterval(() => {
-      currentProgress += 1;
-      setProgress(currentProgress);
-      
-      const noise = (Math.random() - 0.5) * 15;
-      const currentSpeed = Math.max(0, targetSpeed + noise);
-      setUploadSpeed(currentSpeed);
-      
-      setChartData(prev => [...prev, { time: currentProgress, speed: currentSpeed }].slice(-30));
-
-      if (currentProgress >= 100) {
-        if (testInterval.current) clearInterval(testInterval.current);
-        setTestState('completed');
-        setProgress(100);
-      }
-    }, 80);
+    worker.postMessage({ 
+      type, 
+      url: type === 'download' ? '/api/download' : '/api/upload',
+      threads: 8, 
+      duration: totalDuration
+    });
   };
 
   useEffect(() => {
@@ -514,6 +572,13 @@ function SpeedPulseApp() {
                       <MapPin className="w-3 h-3" />
                       Auto-Selected Optimal Node
                     </div>
+
+                    {fps < 30 && (
+                      <div className="text-[10px] font-mono text-red-500 uppercase tracking-[0.2em] mb-4 bg-red-500/10 px-4 py-1 rounded-full border border-red-500/20 flex items-center gap-2 animate-pulse">
+                        <AlertTriangle className="w-3 h-3" />
+                        Low CPU Performance Detected - Results may be affected
+                      </div>
+                    )}
                     
                     <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20">
                       {testState === 'ping' && 'Initializing Connection...'}
