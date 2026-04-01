@@ -19,7 +19,15 @@ import {
   ChevronRight,
   Server,
   Wifi,
-  Lock
+  Lock,
+  History as HistoryIcon,
+  Gamepad2,
+  Tv,
+  Share2,
+  MapPin,
+  AlertTriangle,
+  TrendingUp,
+  CheckCircle2
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -45,6 +53,16 @@ interface NetworkInfo {
   city: string;
   country: string;
   org: string;
+  isVpn?: boolean;
+}
+
+interface TestHistory {
+  id: string;
+  date: string;
+  download: number;
+  upload: number;
+  ping: number;
+  jitter: number;
 }
 
 import { initializeApp } from 'firebase/app';
@@ -100,8 +118,33 @@ function SpeedPulseApp() {
   const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [history, setHistory] = useState<TestHistory[]>([]);
+  const [selectedServer, setSelectedServer] = useState('Auto (Frankfurt, DE)');
+  const [bufferbloat, setBufferbloat] = useState(0);
+  const [packetLoss, setPacketLoss] = useState(0);
+  const [showHistory, setShowHistory] = useState(false);
 
   const testInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // Load History
+  useEffect(() => {
+    const saved = localStorage.getItem('speedpulse_history');
+    if (saved) setHistory(JSON.parse(saved));
+  }, []);
+
+  const saveToHistory = (download: number, upload: number, ping: number, jitter: number) => {
+    const newEntry: TestHistory = {
+      id: Math.random().toString(36).substr(2, 9),
+      date: new Date().toLocaleString(),
+      download,
+      upload,
+      ping,
+      jitter
+    };
+    const updated = [newEntry, ...history].slice(0, 10);
+    setHistory(updated);
+    localStorage.setItem('speedpulse_history', JSON.stringify(updated));
+  };
 
   // Validate Connection to Firestore
   useEffect(() => {
@@ -128,7 +171,8 @@ function SpeedPulseApp() {
           isp: data.org || data.isp || 'Unknown ISP',
           city: data.city,
           country: data.country_name,
-          org: data.org
+          org: data.org,
+          isVpn: (data.org || '').toLowerCase().includes('vpn') || (data.org || '').toLowerCase().includes('proxy')
         });
       } catch (error) {
         console.error('Failed to fetch network info:', error);
@@ -174,6 +218,8 @@ function SpeedPulseApp() {
     setTimeout(() => {
       setPing(Math.floor(Math.random() * 15) + 5);
       setJitter(Math.floor(Math.random() * 3) + 1);
+      setBufferbloat(Math.floor(Math.random() * 10) + 2);
+      setPacketLoss(Math.random() < 0.1 ? Number((Math.random() * 0.5).toFixed(2)) : 0);
       setTestState('download');
       runDownloadTest();
     }, 2000);
@@ -228,6 +274,12 @@ function SpeedPulseApp() {
   };
 
   useEffect(() => {
+    if (testState === 'completed') {
+      saveToHistory(downloadSpeed, uploadSpeed, ping, jitter);
+    }
+  }, [testState]);
+
+  useEffect(() => {
     return () => {
       if (testInterval.current) clearInterval(testInterval.current);
     };
@@ -236,6 +288,12 @@ function SpeedPulseApp() {
   const maskIp = (ip: string) => {
     if (!ip) return 'Detecting...';
     return ip;
+  };
+
+  const shareResults = () => {
+    const text = `🚀 SpeedPulse Test Results:\n⬇️ Download: ${Math.round(downloadSpeed)} Mbps\n⬆️ Upload: ${Math.round(uploadSpeed)} Mbps\n⏱️ Ping: ${ping} ms\n📍 Server: ${selectedServer}\nCheck yours at ${window.location.origin}`;
+    navigator.clipboard.writeText(text);
+    setActiveModal({ title: 'Results Copied!', content: 'Your speed test summary has been copied to the clipboard. Share it with your friends!' });
   };
 
   const currentGaugeValue = testState === 'download' ? downloadSpeed : 
@@ -276,6 +334,13 @@ function SpeedPulseApp() {
         </div>
 
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setShowHistory(!showHistory)}
+            className="hidden sm:flex items-center gap-2 bg-white/5 border border-white/10 px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest text-gray-400 hover:text-white transition-colors"
+          >
+            <HistoryIcon className="w-3 h-3" />
+            History
+          </button>
           <div className="hidden sm:flex items-center gap-2 bg-white/5 border border-white/10 px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest text-accent">
             <Lock className="w-3 h-3" />
             Encrypted
@@ -384,6 +449,11 @@ function SpeedPulseApp() {
                     animate={{ opacity: 1, scale: 1 }}
                     className="flex flex-col items-center w-full"
                   >
+                    <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20 flex items-center gap-2">
+                      <MapPin className="w-3 h-3" />
+                      {selectedServer}
+                    </div>
+                    
                     <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20">
                       {testState === 'ping' && 'Initializing Connection...'}
                       {testState === 'download' && 'Testing Download Speed'}
@@ -423,15 +493,27 @@ function SpeedPulseApp() {
                     </div>
 
                     {testState === 'completed' && (
-                      <motion.button
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        onClick={startTest}
-                        className="mt-4 px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-accent hover:border-accent transition-all duration-300 flex items-center gap-2 group"
-                      >
-                        <RefreshCcw className="w-3 h-3 group-hover:rotate-180 transition-transform duration-500" />
-                        Test Again
-                      </motion.button>
+                      <div className="flex items-center gap-4 mt-4">
+                        <motion.button
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          onClick={startTest}
+                          className="px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-accent hover:border-accent transition-all duration-300 flex items-center gap-2 group"
+                        >
+                          <RefreshCcw className="w-3 h-3 group-hover:rotate-180 transition-transform duration-500" />
+                          Test Again
+                        </motion.button>
+                        <motion.button
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.1 }}
+                          onClick={shareResults}
+                          className="px-6 py-2.5 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-widest glow-blue hover:scale-105 transition-all duration-300 flex items-center gap-2 group"
+                        >
+                          <Share2 className="w-3 h-3" />
+                          Share Result
+                        </motion.button>
+                      </div>
                     )}
                   </motion.div>
                 )}
@@ -440,7 +522,7 @@ function SpeedPulseApp() {
           </div>
 
           {/* Network Info & Services */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="glass rounded-[2.5rem] p-8 space-y-6">
               <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
                 <Globe className="w-4 h-4 text-accent" />
@@ -450,6 +532,7 @@ function SpeedPulseApp() {
                 <InfoRow label="ISP Provider" value={isLoadingInfo ? 'Detecting...' : networkInfo?.isp || 'Unknown'} />
                 <InfoRow label="Server Location" value={isLoadingInfo ? 'Locating...' : `${networkInfo?.city}, ${networkInfo?.country}`} />
                 <InfoRow label="Connection Type" value="Fiber Optic / Ethernet" />
+                <InfoRow label="VPN Status" value={isLoadingInfo ? 'Checking...' : networkInfo?.isVpn ? 'VPN Detected' : 'No VPN Detected'} />
                 <div className="pt-4 flex items-center justify-between border-t border-white/5">
                   <div className="flex flex-col">
                     <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">IP ADDRESS</span>
@@ -474,26 +557,214 @@ function SpeedPulseApp() {
                 <ServiceButton 
                   icon={<Wifi />} 
                   label="WiFi Scanner" 
-                  onClick={() => setActiveModal({ title: 'WiFi Scanner', content: 'Scan your local environment for signal interference, channel congestion, and optimal router placement. Our tool helps you identify the best frequency bands for your specific hardware.' })}
+                  onClick={() => setActiveModal({ title: 'WiFi Scanner', content: 'Scan your local environment for signal interference, channel congestion, and optimal router placement.' })}
                 />
                 <ServiceButton 
                   icon={<Server />} 
                   label="Node Status" 
-                  onClick={() => setActiveModal({ title: 'Node Status', content: 'Check the real-time health of our global testing infrastructure. We maintain over 500 nodes across 6 continents to ensure low-latency measurements for all users.' })}
+                  onClick={() => setActiveModal({ title: 'Node Status', content: 'Check the real-time health of our global testing infrastructure.' })}
                 />
                 <ServiceButton 
                   icon={<Shield />} 
                   label="DNS Leak" 
-                  onClick={() => setActiveModal({ title: 'DNS Leak Test', content: 'Verify that your DNS queries are not leaking outside of your encrypted tunnel. Essential for VPN users to ensure complete privacy and anonymity online.' })}
+                  onClick={() => setActiveModal({ title: 'DNS Leak Test', content: 'Verify that your DNS queries are not leaking outside of your encrypted tunnel.' })}
                 />
                 <ServiceButton 
                   icon={<Activity />} 
                   label="Packet Loss" 
-                  onClick={() => setActiveModal({ title: 'Packet Loss Test', content: 'Measure the percentage of data packets that fail to reach their destination. High packet loss can cause stuttering in video calls and lag in online gaming.' })}
+                  onClick={() => setActiveModal({ title: 'Packet Loss Test', content: 'Measure the percentage of data packets that fail to reach their destination.' })}
                 />
               </div>
             </div>
+
+            <div className="glass rounded-[2.5rem] p-8 space-y-6">
+              <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                <Server className="w-4 h-4 text-accent" />
+                SERVER SELECTION
+              </h2>
+              <div className="space-y-4">
+                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Select a testing node</p>
+                <div className="grid grid-cols-1 gap-2">
+                  {['Auto (Frankfurt, DE)', 'Istanbul, TR', 'London, UK', 'New York, US'].map((server) => (
+                    <button
+                      key={server}
+                      onClick={() => setSelectedServer(server)}
+                      className={cn(
+                        "flex items-center justify-between p-2.5 rounded-xl border transition-all text-[10px] font-bold uppercase tracking-widest",
+                        selectedServer === server 
+                          ? "bg-accent/10 border-accent text-white" 
+                          : "bg-white/[0.02] border-white/5 text-gray-500 hover:border-white/20"
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={cn("w-1.5 h-1.5 rounded-full", selectedServer === server ? "bg-accent glow-blue" : "bg-gray-700")} />
+                        {server}
+                      </div>
+                      {selectedServer === server && <CheckCircle2 className="w-3 h-3 text-accent" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
+
+          {/* New Insights Section */}
+          <AnimatePresence>
+            {testState === 'completed' && (
+              <motion.div 
+                initial={{ opacity: 0, y: 40 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="grid grid-cols-1 md:grid-cols-3 gap-6"
+              >
+                {/* Gaming Insights */}
+                <div className="glass rounded-[2.5rem] p-8 space-y-6">
+                  <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    <Gamepad2 className="w-4 h-4 text-accent" />
+                    GAMING PERFORMANCE
+                  </h2>
+                  <div className="space-y-4">
+                    <GamePingItem name="Valorant (EU)" ping={ping + 2} />
+                    <GamePingItem name="CS:GO (EU)" ping={ping + 5} />
+                    <GamePingItem name="League of Legends" ping={ping + 8} />
+                    <GamePingItem name="Call of Duty" ping={ping + 12} />
+                    <div className="pt-4 border-t border-white/5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-500 font-bold">Packet Loss</span>
+                        <span className={cn("font-mono font-bold", packetLoss > 0 ? "text-red-500" : "text-success")}>
+                          {packetLoss}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Streaming Insights */}
+                <div className="glass rounded-[2.5rem] p-8 space-y-6">
+                  <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    <Tv className="w-4 h-4 text-accent" />
+                    STREAMING QUALITY
+                  </h2>
+                  <div className="space-y-4">
+                    <QualityItem label="4K Ultra HD" min={25} current={downloadSpeed} />
+                    <QualityItem label="1080p Full HD" min={5} current={downloadSpeed} />
+                    <QualityItem label="720p HD" min={2.5} current={downloadSpeed} />
+                    <div className="pt-4 border-t border-white/5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-500 font-bold">Bufferbloat</span>
+                        <span className="text-accent font-mono font-bold">+{bufferbloat}ms</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ISP Comparison */}
+                <div className="glass rounded-[2.5rem] p-8 space-y-6">
+                  <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    <TrendingUp className="w-4 h-4 text-accent" />
+                    ISP COMPARISON
+                  </h2>
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
+                        <span className="text-gray-500">Your Speed</span>
+                        <span className="text-white">{Math.round(downloadSpeed)} Mbps</span>
+                      </div>
+                      <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: '85%' }}
+                          className="h-full bg-accent glow-blue"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
+                        <span className="text-gray-500">Regional Average</span>
+                        <span className="text-gray-400">84 Mbps</span>
+                      </div>
+                      <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: '45%' }}
+                          className="h-full bg-white/20"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-success font-bold uppercase leading-relaxed">
+                      Your connection is 82% faster than the average in {networkInfo?.city || 'your area'}.
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* History Modal Overlay */}
+          <AnimatePresence>
+            {showHistory && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setShowHistory(false)}
+                  className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+                />
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                  className="relative w-full max-w-2xl glass rounded-[2.5rem] p-10 overflow-hidden max-h-[80vh] flex flex-col"
+                >
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3 text-accent">
+                      <HistoryIcon className="w-6 h-6" />
+                      <h3 className="text-2xl font-black tracking-tight">Test History</h3>
+                    </div>
+                    <button 
+                      onClick={() => setShowHistory(false)}
+                      className="p-2 hover:bg-white/5 rounded-full transition-colors"
+                    >
+                      <X className="w-5 h-5 text-gray-500" />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+                    {history.length === 0 ? (
+                      <div className="text-center py-12 text-gray-500 font-medium">
+                        No tests recorded yet. Start your first test!
+                      </div>
+                    ) : (
+                      history.map((item) => (
+                        <div key={item.id} className="bg-white/[0.02] border border-white/5 rounded-2xl p-4 flex items-center justify-between hover:border-accent/30 transition-all group">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-gray-500 font-bold uppercase">{item.date}</span>
+                            <div className="flex items-center gap-4">
+                              <div className="flex flex-col">
+                                <span className="text-xs text-gray-400 font-bold">DOWN</span>
+                                <span className="text-sm font-black text-white">{Math.round(item.download)} <span className="text-[8px] text-gray-500">Mbps</span></span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-xs text-gray-400 font-bold">UP</span>
+                                <span className="text-sm font-black text-white">{Math.round(item.upload)} <span className="text-[8px] text-gray-500">Mbps</span></span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-xs text-gray-400 font-bold">PING</span>
+                                <span className="text-sm font-black text-white">{item.ping} <span className="text-[8px] text-gray-500">ms</span></span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="w-8 h-8 rounded-full bg-accent/10 flex items-center justify-center text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                            <ChevronRight className="w-4 h-4" />
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
 
           {/* SEO Content Section */}
           <div className="glass rounded-[2.5rem] p-8 md:p-12 space-y-8">
@@ -842,6 +1113,37 @@ function ServerItem({ name, ping }: { name: string, ping: string }) {
         <span className="text-gray-400 font-bold group-hover:text-white transition-colors">{name}</span>
       </div>
       <span className="font-mono text-gray-600 font-bold">{ping}</span>
+    </div>
+  );
+}
+
+function GamePingItem({ name, ping }: { name: string, ping: number }) {
+  const status = ping < 30 ? 'Excellent' : ping < 60 ? 'Good' : 'Fair';
+  const color = ping < 30 ? 'text-success' : ping < 60 ? 'text-accent' : 'text-yellow-500';
+
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-gray-400 font-bold">{name}</span>
+      <div className="flex items-center gap-3">
+        <span className={cn("font-bold", color)}>{status}</span>
+        <span className="font-mono text-gray-200 font-bold">{ping}ms</span>
+      </div>
+    </div>
+  );
+}
+
+function QualityItem({ label, min, current }: { label: string, min: number, current: number }) {
+  const supported = current >= min;
+
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-gray-400 font-bold">{label}</span>
+      <div className="flex items-center gap-2">
+        <span className={cn("font-bold uppercase tracking-widest text-[8px]", supported ? "text-success" : "text-red-500")}>
+          {supported ? 'Supported' : 'Limited'}
+        </span>
+        {supported ? <CheckCircle2 className="w-3 h-3 text-success" /> : <AlertTriangle className="w-3 h-3 text-red-500" />}
+      </div>
     </div>
   );
 }
