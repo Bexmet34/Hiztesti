@@ -214,29 +214,27 @@ export default function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 container mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="flex-1 container mx-auto px-6 py-12 max-w-5xl">
         
-        {/* Left Sidebar - Ad Placement */}
-        <div className="hidden lg:block lg:col-span-2">
-          <div className="sticky top-24 space-y-6">
-            <div className="w-full aspect-[1/3] bg-white/[0.02] border border-white/5 rounded-3xl flex flex-col items-center justify-center p-4 text-center">
-              <span className="text-[10px] uppercase tracking-widest text-gray-600 mb-2">Advertisement</span>
-              <div className="flex-1 w-full border border-dashed border-white/10 rounded-2xl flex items-center justify-center">
-                <p className="text-[10px] text-gray-700 italic">Premium Ad Space<br/>160 x 600</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Center - Test Area */}
-        <div className="lg:col-span-8 space-y-8">
+        <div className="space-y-12">
           
-          {/* Top Ad Banner */}
-          <div className="w-full h-24 bg-white/[0.02] border border-white/5 rounded-3xl flex flex-col items-center justify-center p-2 text-center">
-            <span className="text-[10px] uppercase tracking-widest text-gray-600 mb-1">Advertisement</span>
-            <div className="flex-1 w-full border border-dashed border-white/10 rounded-2xl flex items-center justify-center">
-              <p className="text-[10px] text-gray-700 italic">Leaderboard Ad Space (728 x 90)</p>
-            </div>
+          {/* SEO Header */}
+          <div className="text-center space-y-4">
+            <motion.h1 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-4xl md:text-6xl font-black tracking-tighter bg-gradient-to-b from-white to-white/40 bg-clip-text text-transparent"
+            >
+              Professional Internet Speed Test
+            </motion.h1>
+            <motion.p 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="text-gray-500 max-w-2xl mx-auto font-medium"
+            >
+              Measure your network performance with precision. Get accurate results for download, upload, ping, and jitter in seconds.
+            </motion.p>
           </div>
 
           {/* Test Gauge Card */}
@@ -388,10 +386,10 @@ export default function App() {
           {/* Network Info & Services */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="glass rounded-[2.5rem] p-8 space-y-6">
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+              <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
                 <Globe className="w-4 h-4 text-accent" />
                 NETWORK DIAGNOSTICS
-              </div>
+              </h2>
               <div className="space-y-4">
                 <InfoRow label="ISP Provider" value={isLoadingInfo ? 'Detecting...' : networkInfo?.isp || 'Unknown'} />
                 <InfoRow label="Server Location" value={isLoadingInfo ? 'Locating...' : `${networkInfo?.city}, ${networkInfo?.country}`} />
@@ -412,10 +410,10 @@ export default function App() {
             </div>
 
             <div className="glass rounded-[2.5rem] p-8 space-y-6">
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+              <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
                 <Zap className="w-4 h-4 text-accent" />
                 ADVANCED TOOLS
-              </div>
+              </h2>
               <div className="grid grid-cols-2 gap-4">
                 <ServiceButton icon={<Wifi />} label="WiFi Scanner" />
                 <ServiceButton icon={<Server />} label="Node Status" />
@@ -425,34 +423,30 @@ export default function App() {
             </div>
           </div>
 
-          {/* Bottom Ad Banner */}
-          <div className="w-full h-32 bg-white/[0.02] border border-white/5 rounded-3xl flex flex-col items-center justify-center p-4 text-center">
-            <span className="text-[10px] uppercase tracking-widest text-gray-600 mb-2">Advertisement</span>
-            <div className="flex-1 w-full border border-dashed border-white/10 rounded-2xl flex items-center justify-center">
-              <p className="text-xs text-gray-700 italic">Premium Banner Ad Space (728 x 90)</p>
-            </div>
-          </div>
-
-        </div>
-
-        {/* Right Sidebar - More Ads & Info */}
-        <div className="hidden lg:block lg:col-span-2 space-y-6">
-          <div className="glass rounded-3xl p-6 space-y-6 border-white/5">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-500">Global Nodes</h3>
+          {/* SEO Content Section */}
+          <div className="glass rounded-[2.5rem] p-8 md:p-12 space-y-8">
             <div className="space-y-4">
-              <ServerItem name="Cloudflare" ping="6ms" />
-              <ServerItem name="Google Cloud" ping="11ms" />
-              <ServerItem name="AWS Frankfurt" ping="14ms" />
-              <ServerItem name="DigitalOcean" ping="19ms" />
+              <h2 className="text-2xl font-bold">Why Use SpeedPulse?</h2>
+              <p className="text-gray-500 leading-relaxed">
+                SpeedPulse provides the most accurate internet speed test results by connecting to a global network of high-performance nodes. Whether you are on fiber, broadband, or mobile 5G, our tool analyzes your connection quality with millisecond precision.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="space-y-2">
+                <h3 className="font-bold text-accent">Accurate Mbps</h3>
+                <p className="text-xs text-gray-600">Real-time bandwidth analysis using multi-stream technology.</p>
+              </div>
+              <div className="space-y-2">
+                <h3 className="font-bold text-accent">Ping & Jitter</h3>
+                <p className="text-xs text-gray-600">Essential metrics for gamers and remote workers to measure stability.</p>
+              </div>
+              <div className="space-y-2">
+                <h3 className="font-bold text-accent">Privacy First</h3>
+                <p className="text-xs text-gray-600">We never store your full IP address or sell your network data.</p>
+              </div>
             </div>
           </div>
 
-          <div className="w-full aspect-square bg-white/[0.02] border border-white/5 rounded-3xl flex flex-col items-center justify-center p-4 text-center">
-            <span className="text-[10px] uppercase tracking-widest text-gray-600 mb-2">Advertisement</span>
-            <div className="flex-1 w-full border border-dashed border-white/10 rounded-2xl flex items-center justify-center">
-              <p className="text-xs text-gray-700 italic">Square Ad<br/>300 x 250</p>
-            </div>
-          </div>
         </div>
 
       </main>
