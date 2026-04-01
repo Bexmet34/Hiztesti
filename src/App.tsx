@@ -111,7 +111,6 @@ function SpeedPulseApp() {
   const [jitter, setJitter] = useState(0);
   const [progress, setProgress] = useState(0);
   const [chartData, setChartData] = useState<SpeedDataPoint[]>([]);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [networkInfo, setNetworkInfo] = useState<NetworkInfo | null>(null);
   const [isLoadingInfo, setIsLoadingInfo] = useState(true);
   const [activeModal, setActiveModal] = useState<{ title: string, content: string } | null>(null);
@@ -119,12 +118,29 @@ function SpeedPulseApp() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [history, setHistory] = useState<TestHistory[]>([]);
-  const [selectedServer, setSelectedServer] = useState('Auto (Frankfurt, DE)');
   const [bufferbloat, setBufferbloat] = useState(0);
   const [packetLoss, setPacketLoss] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ lat: number, lon: number } | null>(null);
 
   const testInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // Request Geolocation
+  useEffect(() => {
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lon: position.coords.longitude
+          });
+        },
+        (error) => {
+          console.error("Error getting location:", error);
+        }
+      );
+    }
+  }, []);
 
   // Load History
   useEffect(() => {
@@ -291,7 +307,7 @@ function SpeedPulseApp() {
   };
 
   const shareResults = () => {
-    const text = `🚀 SpeedPulse Test Results:\n⬇️ Download: ${Math.round(downloadSpeed)} Mbps\n⬆️ Upload: ${Math.round(uploadSpeed)} Mbps\n⏱️ Ping: ${ping} ms\n📍 Server: ${selectedServer}\nCheck yours at ${window.location.origin}`;
+    const text = `🚀 SpeedPulse Test Results:\n⬇️ Download: ${Math.round(downloadSpeed)} Mbps\n⬆️ Upload: ${Math.round(uploadSpeed)} Mbps\n⏱️ Ping: ${ping} ms\n📍 Server: Auto-Selected\nCheck yours at ${window.location.origin}`;
     navigator.clipboard.writeText(text);
     setActiveModal({ title: 'Results Copied!', content: 'Your speed test summary has been copied to the clipboard. Share it with your friends!' });
   };
@@ -345,12 +361,6 @@ function SpeedPulseApp() {
             <Lock className="w-3 h-3" />
             Encrypted
           </div>
-          <button 
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="md:hidden p-2 hover:bg-white/5 rounded-lg"
-          >
-            {isMenuOpen ? <X /> : <Menu />}
-          </button>
         </div>
       </nav>
 
@@ -451,7 +461,7 @@ function SpeedPulseApp() {
                   >
                     <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20 flex items-center gap-2">
                       <MapPin className="w-3 h-3" />
-                      {selectedServer}
+                      Auto-Selected Optimal Node
                     </div>
                     
                     <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20">
@@ -519,10 +529,8 @@ function SpeedPulseApp() {
                 )}
               </AnimatePresence>
             </div>
-          </div>
-
           {/* Network Info & Services */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="glass rounded-[2.5rem] p-8 space-y-6">
               <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
                 <Globe className="w-4 h-4 text-accent" />
@@ -531,7 +539,7 @@ function SpeedPulseApp() {
               <div className="space-y-4">
                 <InfoRow label="ISP Provider" value={isLoadingInfo ? 'Detecting...' : networkInfo?.isp || 'Unknown'} />
                 <InfoRow label="Server Location" value={isLoadingInfo ? 'Locating...' : `${networkInfo?.city}, ${networkInfo?.country}`} />
-                <InfoRow label="Connection Type" value="Fiber Optic / Ethernet" />
+                <InfoRow label="User Location" value={userLocation ? `${userLocation.lat.toFixed(4)}, ${userLocation.lon.toFixed(4)}` : 'Permission Required'} />
                 <InfoRow label="VPN Status" value={isLoadingInfo ? 'Checking...' : networkInfo?.isVpn ? 'VPN Detected' : 'No VPN Detected'} />
                 <div className="pt-4 flex items-center justify-between border-t border-white/5">
                   <div className="flex flex-col">
@@ -576,36 +584,8 @@ function SpeedPulseApp() {
                 />
               </div>
             </div>
+          </div>
 
-            <div className="glass rounded-[2.5rem] p-8 space-y-6">
-              <h2 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
-                <Server className="w-4 h-4 text-accent" />
-                SERVER SELECTION
-              </h2>
-              <div className="space-y-4">
-                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Select a testing node</p>
-                <div className="grid grid-cols-1 gap-2">
-                  {['Auto (Frankfurt, DE)', 'Istanbul, TR', 'London, UK', 'New York, US'].map((server) => (
-                    <button
-                      key={server}
-                      onClick={() => setSelectedServer(server)}
-                      className={cn(
-                        "flex items-center justify-between p-2.5 rounded-xl border transition-all text-[10px] font-bold uppercase tracking-widest",
-                        selectedServer === server 
-                          ? "bg-accent/10 border-accent text-white" 
-                          : "bg-white/[0.02] border-white/5 text-gray-500 hover:border-white/20"
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        <div className={cn("w-1.5 h-1.5 rounded-full", selectedServer === server ? "bg-accent glow-blue" : "bg-gray-700")} />
-                        {server}
-                      </div>
-                      {selectedServer === server && <CheckCircle2 className="w-3 h-3 text-accent" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* New Insights Section */}
