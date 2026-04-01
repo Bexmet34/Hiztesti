@@ -39,6 +39,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
+import { toPng } from 'html-to-image';
 import { cn } from './lib/utils';
 
 type TestState = 'idle' | 'ping' | 'download' | 'upload' | 'completed';
@@ -67,12 +68,14 @@ interface TestHistory {
 }
 
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, serverTimestamp, getDocFromServer, doc } from 'firebase/firestore';
+import { initializeFirestore, collection, addDoc, serverTimestamp, getDocFromServer, doc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+}, firebaseConfig.firestoreDatabaseId);
 
 // Error Handling
 enum OperationType {
@@ -124,8 +127,11 @@ function SpeedPulseApp() {
   const [showHistory, setShowHistory] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number, lon: number } | null>(null);
   const [fps, setFps] = useState(60);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [liveTests, setLiveTests] = useState<any[]>([]);
 
   const testInterval = useRef<NodeJS.Timeout | null>(null);
+  const resultCardRef = useRef<HTMLDivElement>(null);
   const fpsRef = useRef<number[]>([]);
   const lastFrameTime = useRef(performance.now());
 
@@ -215,7 +221,7 @@ function SpeedPulseApp() {
     if (saved) setHistory(JSON.parse(saved));
   }, []);
 
-  const saveToHistory = (download: number, upload: number, ping: number, jitter: number) => {
+  const saveToHistory = async (download: number, upload: number, ping: number, jitter: number) => {
     const newEntry: TestHistory = {
       id: Math.random().toString(36).substr(2, 9),
       date: new Date().toLocaleString(),
@@ -227,42 +233,131 @@ function SpeedPulseApp() {
     const updated = [newEntry, ...history].slice(0, 10);
     setHistory(updated);
     localStorage.setItem('speedpulse_history', JSON.stringify(updated));
+
+    // Save to Firestore
+    try {
+      await addDoc(collection(db, 'tests'), {
+        download,
+        upload,
+        ping,
+        jitter,
+        timestamp: serverTimestamp(),
+        userId: 'anonymous' // You could add real auth later
+      });
+    } catch (error) {
+      console.error("Error saving test to Firestore:", error);
+      // We don't throw here to avoid breaking the UI if Firestore fails
+    }
   };
 
   // Validate Connection to Firestore
   useEffect(() => {
+    let retryCount = 0;
+    const maxRetries = 3;
     const testConnection = async () => {
       try {
         await getDocFromServer(doc(db, 'test', 'connection'));
+        console.log("Firestore connection successful.");
       } catch (error) {
+        console.warn(`Firestore connection attempt ${retryCount + 1} failed:`, error);
         if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
+          console.error("Firestore is offline. Please check your network or Firebase configuration.");
+        }
+        if (retryCount < maxRetries) {
+          retryCount++;
+          setTimeout(testConnection, 2000 * retryCount); // Exponential backoff
         }
       }
     };
     testConnection();
   }, []);
 
+  // Listen for Live Activity from Firestore
+  useEffect(() => {
+    const q = query(collection(db, 'tests'), orderBy('timestamp', 'desc'), limit(5));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const tests = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setLiveTests(tests);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'tests');
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Fetch Network Info
   useEffect(() => {
     const fetchInfo = async () => {
-      try {
-        const response = await fetch('https://ipapi.co/json/');
-        const data = await response.json();
-        setNetworkInfo({
-          ip: data.ip,
-          isp: data.org || data.isp || 'Unknown ISP',
-          city: data.city,
-          country: data.country_name,
-          org: data.org,
-          isVpn: (data.org || '').toLowerCase().includes('vpn') || (data.org || '').toLowerCase().includes('proxy')
-        });
-      } catch (error) {
-        console.error('Failed to fetch network info:', error);
-      } finally {
-        setIsLoadingInfo(false);
+      setIsLoadingInfo(true);
+      
+      // List of providers to try in order
+      const providers = [
+        {
+          url: '/api/network-info', // Try our backend proxy first (bypasses adblockers/CORS)
+          parser: (data: any) => {
+            // The proxy might return data from different providers, so we need to be flexible
+            if (data.ip) {
+              return {
+                ip: data.ip,
+                isp: data.org || data.connection?.isp || data.isp || 'Unknown ISP',
+                city: data.city || 'Unknown',
+                country: data.country_name || data.country || 'Unknown',
+                org: data.org || data.connection?.org || '',
+                isVpn: (data.org || '').toLowerCase().includes('vpn') || (data.org || '').toLowerCase().includes('proxy') || data.security?.vpn || false
+              };
+            }
+            throw new Error('Invalid data format from proxy');
+          }
+        },
+        {
+          url: 'https://ipapi.co/json/',
+          parser: (data: any) => ({
+            ip: data.ip,
+            isp: data.org || data.isp || 'Unknown ISP',
+            city: data.city,
+            country: data.country_name,
+            org: data.org,
+            isVpn: (data.org || '').toLowerCase().includes('vpn') || (data.org || '').toLowerCase().includes('proxy')
+          })
+        },
+        {
+          url: 'https://ipwho.is/',
+          parser: (data: any) => ({
+            ip: data.ip,
+            isp: data.connection?.isp || 'Unknown ISP',
+            city: data.city,
+            country: data.country,
+            org: data.connection?.org || '',
+            isVpn: data.security?.vpn || data.security?.proxy || false
+          })
+        }
+      ];
+
+      for (const provider of providers) {
+        try {
+          const response = await fetch(provider.url, { signal: AbortSignal.timeout(5000) });
+          if (!response.ok) continue;
+          const data = await response.json();
+          
+          // ipwho.is returns success: false instead of 4xx/5xx sometimes
+          if (provider.url.includes('ipwho.is') && data.success === false) continue;
+
+          setNetworkInfo(provider.parser(data));
+          setIsLoadingInfo(false);
+          return; // Success!
+        } catch (error) {
+          console.warn(`Failed to fetch from ${provider.url}:`, error);
+          continue; // Try next provider
+        }
       }
+
+      // If all failed
+      console.error('All network info providers failed. This might be due to aggressive adblocking or network restrictions.');
+      setIsLoadingInfo(false);
     };
+
     fetchInfo();
   }, []);
 
@@ -330,55 +425,105 @@ function SpeedPulseApp() {
   };
 
   const runRealTest = (type: 'download' | 'upload') => {
-    const worker = new Worker(new URL('./speedWorker.ts', import.meta.url), { type: 'module' });
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(new URL('./speedWorker.ts', import.meta.url), { type: 'module' });
+    } catch (err) {
+      console.error('Failed to create worker:', err);
+      // Fallback or error state
+      setTestState('idle');
+      return;
+    }
+
+    worker.onerror = (err) => {
+      console.error('Worker error:', err);
+      worker?.terminate();
+    };
+
     const startTime = performance.now();
     const warmUpDuration = 2000; 
     const totalDuration = 10000; 
     
+    // Timer to update progress even if speed is 0
+    const progressTimer = setInterval(() => {
+      const elapsed = performance.now() - startTime;
+      setProgress(Math.min(100, (elapsed / totalDuration) * 100));
+    }, 100);
+
+    // Safety timeout in case worker hangs
+    const forceCompleteTimer = setTimeout(() => {
+      console.warn(`${type} test timed out. Forcing completion.`);
+      handleComplete({ type: 'complete', totalBytes: 0 });
+    }, totalDuration + 5000);
+
     const samples: { bytes: number, time: number }[] = [];
     const windowSize = 1000; 
+
+    if (!worker) return;
+
+    const handleComplete = (data: any) => {
+      console.log(`${type} test complete. Total bytes: ${data.totalBytes}`);
+      clearInterval(progressTimer);
+      clearTimeout(forceCompleteTimer);
+      worker?.terminate();
+      if (type === 'download') {
+        setTimeout(() => {
+          setTestState('upload');
+          setProgress(0);
+          setChartData([]);
+          runRealTest('upload');
+        }, 1000);
+      } else {
+        setTestState('completed');
+        setProgress(100);
+      }
+    };
 
     worker.onmessage = (e) => {
       if (e.data.type === 'progress') {
         const now = performance.now();
         const elapsed = now - startTime;
         
-        setProgress(Math.min(100, (elapsed / totalDuration) * 100));
-
         if (elapsed > warmUpDuration) {
           samples.push({ bytes: e.data.bytes, time: now });
           
-          const windowStart = now - windowSize;
+          // Use a larger window for slow connections (3 seconds)
+          const windowStart = now - 3000; 
           const windowSamples = samples.filter(s => s.time >= windowStart);
           
           if (windowSamples.length >= 2) {
             const first = windowSamples[0];
             const last = windowSamples[windowSamples.length - 1];
-            const bytesInWindow = last.bytes - (first.bytes || 0);
+            const bytesInWindow = last.bytes - first.bytes;
             const timeInWindow = last.time - first.time;
             
-            let mbps = (bytesInWindow * 8) / (timeInWindow / 1000) / 1000000;
-            mbps = mbps * 1.035;
+            if (timeInWindow > 0) {
+              let mbps = (bytesInWindow * 8) / (timeInWindow / 1000) / 1000000;
+              mbps = mbps * 1.035; // Overhead adjustment
 
-            if (type === 'download') setDownloadSpeed(mbps);
-            else setUploadSpeed(mbps);
+              if (type === 'download') setDownloadSpeed(mbps);
+              else setUploadSpeed(mbps);
+              
+              setChartData(prev => [...prev, { time: elapsed, speed: mbps }].slice(-50));
+            }
+          } else if (samples.length >= 1) {
+            // Fallback for very slow connections: use total since warmUpDuration
+            const first = samples[0];
+            const last = samples[samples.length - 1];
+            const bytesSinceStart = last.bytes - first.bytes;
+            const timeSinceStart = last.time - first.time;
             
-            setChartData(prev => [...prev, { time: elapsed, speed: mbps }].slice(-50));
+            if (timeSinceStart > 500) { // Only calculate if we have at least 0.5s of data
+              let mbps = (bytesSinceStart * 8) / (timeSinceStart / 1000) / 1000000;
+              mbps = mbps * 1.035;
+              
+              if (type === 'download') setDownloadSpeed(mbps);
+              else setUploadSpeed(mbps);
+            }
           }
         }
       } else if (e.data.type === 'complete') {
-        worker.terminate();
-        if (type === 'download') {
-          setTimeout(() => {
-            setTestState('upload');
-            setProgress(0);
-            setChartData([]);
-            runRealTest('upload');
-          }, 1000);
-        } else {
-          setTestState('completed');
-          setProgress(100);
-        }
+        handleComplete(e.data);
       }
     };
 
@@ -407,10 +552,48 @@ function SpeedPulseApp() {
     return ip;
   };
 
-  const shareResults = () => {
-    const text = `🚀 SpeedPulse Test Results:\n⬇️ Download: ${Math.round(downloadSpeed)} Mbps\n⬆️ Upload: ${Math.round(uploadSpeed)} Mbps\n⏱️ Ping: ${ping} ms\n📍 Server: Auto-Selected\nCheck yours at ${window.location.origin}`;
-    navigator.clipboard.writeText(text);
-    setActiveModal({ title: 'Results Copied!', content: 'Your speed test summary has been copied to the clipboard. Share it with your friends!' });
+  const shareResults = async () => {
+    const shareData = {
+      title: 'SpeedPulse Test Results',
+      text: `🚀 SpeedPulse Test Results:\n⬇️ Download: ${Math.round(downloadSpeed)} Mbps\n⬆️ Upload: ${Math.round(uploadSpeed)} Mbps\n⏱️ Ping: ${ping} ms\n📍 Server: Auto-Selected\nCheck yours at ${window.location.origin}`,
+      url: window.location.origin
+    };
+
+    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          console.error('Error sharing:', err);
+        }
+      }
+    } else {
+      navigator.clipboard.writeText(shareData.text);
+      setActiveModal({ title: 'Results Copied!', content: 'Your speed test summary has been copied to the clipboard. Share it with your friends!' });
+    }
+  };
+
+  const downloadResultImage = async () => {
+    if (!resultCardRef.current) return;
+    
+    setIsGeneratingImage(true);
+    try {
+      const dataUrl = await toPng(resultCardRef.current, {
+        cacheBust: true,
+        quality: 1,
+        pixelRatio: 2,
+      });
+      
+      const link = document.createElement('a');
+      link.download = `speedpulse-result-${Date.now()}.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (err) {
+      console.error('Failed to generate image:', err);
+      setActiveModal({ title: 'Error', content: 'Could not generate the result image. Please try again.' });
+    } finally {
+      setIsGeneratingImage(false);
+    }
   };
 
   const currentGaugeValue = testState === 'download' ? downloadSpeed : 
@@ -498,7 +681,7 @@ function SpeedPulseApp() {
           </div>
 
           {/* Test Gauge Card */}
-          <div className="glass rounded-[3rem] p-6 md:p-10 relative overflow-hidden shadow-2xl shadow-accent/5 flex flex-col gap-8">
+          <div ref={resultCardRef} className="glass rounded-[3rem] p-6 md:p-10 relative overflow-hidden shadow-2xl shadow-accent/5 flex flex-col gap-8">
             {/* Progress Bar */}
             <div className="absolute top-0 left-0 w-full h-1 bg-white/5">
               <motion.div 
@@ -619,7 +802,7 @@ function SpeedPulseApp() {
                     </div>
 
                     {testState === 'completed' && (
-                      <div className="flex items-center gap-4 mt-4">
+                      <div className="flex flex-wrap items-center justify-center gap-4 mt-4">
                         <motion.button
                           initial={{ opacity: 0, y: 20 }}
                           animate={{ opacity: 1, y: 0 }}
@@ -634,10 +817,25 @@ function SpeedPulseApp() {
                           animate={{ opacity: 1, y: 0 }}
                           transition={{ delay: 0.1 }}
                           onClick={shareResults}
-                          className="px-6 py-2.5 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-widest glow-blue hover:scale-105 transition-all duration-300 flex items-center gap-2 group"
+                          className="px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest hover:text-white transition-all duration-300 flex items-center gap-2 group"
                         >
                           <Share2 className="w-3 h-3" />
-                          Share Result
+                          Copy Text
+                        </motion.button>
+                        <motion.button
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.2 }}
+                          disabled={isGeneratingImage}
+                          onClick={downloadResultImage}
+                          className="px-6 py-2.5 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-widest glow-blue hover:scale-105 transition-all duration-300 flex items-center gap-2 group disabled:opacity-50"
+                        >
+                          {isGeneratingImage ? (
+                            <RefreshCcw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Download className="w-3 h-3" />
+                          )}
+                          {isGeneratingImage ? 'Generating...' : 'Download Card'}
                         </motion.button>
                       </div>
                     )}
@@ -781,6 +979,56 @@ function SpeedPulseApp() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Live Activity Section */}
+          <section className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
+                <Globe className="w-5 h-5 text-accent animate-pulse" />
+                Live Network Activity
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Real-time Feed</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              {liveTests.length === 0 ? (
+                <div className="col-span-full py-12 text-center glass rounded-3xl border border-white/5">
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">Waiting for pulses...</p>
+                </div>
+              ) : (
+                liveTests.map((test) => (
+                  <motion.div 
+                    key={test.id}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="glass rounded-3xl p-4 border border-white/5 hover:border-accent/30 transition-all group"
+                  >
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-gray-500 font-bold uppercase tracking-widest">Download</span>
+                        <span className="text-lg font-black text-white tabular-nums">{Math.round(test.download)}</span>
+                      </div>
+                      <div className="p-1.5 bg-accent/10 rounded-lg text-accent">
+                        <Zap className="w-3 h-3" />
+                      </div>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]">
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-gray-400 font-bold uppercase">Ping</span>
+                        <span className="font-mono text-gray-300">{test.ping}ms</span>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className="text-[8px] text-gray-400 font-bold uppercase">Upload</span>
+                        <span className="font-mono text-gray-300">{Math.round(test.upload)}</span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+          </section>
 
           {/* History Modal Overlay */}
           <AnimatePresence>
@@ -999,6 +1247,74 @@ function SpeedPulseApp() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Hidden Result Card for Image Generation */}
+      <div className="fixed -left-[9999px] top-0">
+        <div 
+          ref={resultCardRef}
+          className="w-[800px] h-[450px] bg-[#050507] p-12 flex flex-col justify-between relative overflow-hidden border border-white/10"
+        >
+          {/* Background Decorative Elements */}
+          <div className="absolute top-0 right-0 w-96 h-96 bg-accent/20 blur-[120px] rounded-full -mr-48 -mt-48" />
+          <div className="absolute bottom-0 left-0 w-96 h-96 bg-red-500/10 blur-[120px] rounded-full -ml-48 -mb-48" />
+          
+          <div className="flex justify-between items-start relative z-10">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 bg-accent rounded-2xl flex items-center justify-center shadow-2xl shadow-accent/40">
+                <Activity className="text-white w-10 h-10" />
+              </div>
+              <div>
+                <h1 className="text-4xl font-black text-white tracking-tighter">SpeedPulse</h1>
+                <p className="text-accent font-mono text-xs uppercase tracking-[0.4em]">Professional Diagnostics</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-gray-500 font-mono text-[10px] uppercase tracking-widest">{new Date().toLocaleDateString()}</p>
+              <p className="text-gray-500 font-mono text-[10px] uppercase tracking-widest">{new Date().toLocaleTimeString()}</p>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-end relative z-10">
+            <div className="space-y-2">
+              <div className="flex items-baseline gap-4">
+                <span className="text-8xl font-black text-white tracking-tighter tabular-nums">
+                  {Math.round(downloadSpeed)}
+                </span>
+                <span className="text-2xl font-black text-accent uppercase tracking-widest">Mbps</span>
+              </div>
+              <p className="text-gray-400 font-black uppercase tracking-[0.3em] text-sm flex items-center gap-2">
+                <Download className="w-4 h-4 text-accent" />
+                Download Speed
+              </p>
+            </div>
+
+            <div className="flex gap-12">
+              <div className="text-right space-y-1">
+                <p className="text-gray-500 font-black uppercase tracking-widest text-[10px]">Upload</p>
+                <p className="text-2xl font-black text-white tabular-nums">{Math.round(uploadSpeed)} <span className="text-xs text-gray-500">Mbps</span></p>
+              </div>
+              <div className="text-right space-y-1">
+                <p className="text-gray-500 font-black uppercase tracking-widest text-[10px]">Ping</p>
+                <p className="text-2xl font-black text-white tabular-nums">{ping} <span className="text-xs text-gray-500">ms</span></p>
+              </div>
+              <div className="text-right space-y-1">
+                <p className="text-gray-500 font-black uppercase tracking-widest text-[10px]">Jitter</p>
+                <p className="text-2xl font-black text-white tabular-nums">{jitter} <span className="text-xs text-gray-500">ms</span></p>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-8 border-t border-white/10 flex justify-between items-center relative z-10">
+            <div className="flex items-center gap-2 text-gray-500">
+              <Globe className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase tracking-widest">{networkInfo?.isp || 'Unknown ISP'}</span>
+            </div>
+            <div className="text-accent font-black text-xs uppercase tracking-[0.4em]">
+              speedpulse.net
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

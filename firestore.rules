@@ -53,6 +53,16 @@ service cloud.firestore {
              data.createdAt == request.time;
     }
 
+    function isValidTestResult(data) {
+      return hasRequiredFields(['download', 'upload', 'ping', 'jitter', 'timestamp']) &&
+             hasOnlyAllowedFields(['download', 'upload', 'ping', 'jitter', 'timestamp', 'userId']) &&
+             data.download is number && data.download >= 0 &&
+             data.upload is number && data.upload >= 0 &&
+             data.ping is number && data.ping >= 0 &&
+             data.jitter is number && data.jitter >= 0 &&
+             data.timestamp is timestamp;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -65,6 +75,21 @@ service cloud.firestore {
       allow read, list: if isAdmin();
       
       // No updates or deletes allowed for subscribers via the app
+      allow update, delete: if isAdmin();
+    }
+
+    match /tests/{testId} {
+      // Allow anyone to save a test result (for now, to enable public sharing)
+      // In a real app, you might restrict this to authenticated users or use a rate limit
+      allow create: if isValidTestResult(request.resource.data);
+      
+      // Allow reading individual results for sharing
+      allow get: if true;
+      
+      // Allow public listing for the Live Activity feed
+      allow list: if true;
+      
+      // No updates or deletes allowed for test results
       allow update, delete: if isAdmin();
     }
 

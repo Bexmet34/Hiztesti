@@ -43,15 +43,26 @@ async function startServer() {
     res.header("Pragma", "no-cache");
     res.header("Expires", "0");
     
-    // Send dummy data
+    // Send dummy data in a non-blocking way with backpressure handling
     const buffer = Buffer.alloc(64 * 1024, 'x'); // 64KB chunks
     let sent = 0;
-    while (sent < size) {
-      const toSend = Math.min(buffer.length, size - sent);
-      res.write(buffer.subarray(0, toSend));
-      sent += toSend;
-    }
-    res.end();
+    
+    const sendChunk = () => {
+      while (sent < size) {
+        const toSend = Math.min(buffer.length, size - sent);
+        const canContinue = res.write(buffer.subarray(0, toSend));
+        sent += toSend;
+        
+        if (!canContinue) {
+          // Wait for 'drain' event to continue
+          res.once('drain', sendChunk);
+          return;
+        }
+      }
+      res.end();
+    };
+    
+    sendChunk();
   });
 
   // Upload endpoint
@@ -62,6 +73,28 @@ async function startServer() {
     req.on("end", () => {
       res.status(200).json({ success: true });
     });
+  });
+
+  // Proxy endpoint for network info to bypass client-side CORS/Adblockers
+  app.get("/api/network-info", async (req, res) => {
+    const providers = [
+      'https://ipapi.co/json/',
+      'https://ipwho.is/',
+      'https://api.ipify.org?format=json'
+    ];
+
+    for (const url of providers) {
+      try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (response.ok) {
+          const data = await response.json();
+          return res.json(data);
+        }
+      } catch (error) {
+        console.error(`Backend failed to fetch from ${url}:`, error);
+      }
+    }
+    res.status(500).json({ error: "All providers failed" });
   });
 
   // Vite middleware for development

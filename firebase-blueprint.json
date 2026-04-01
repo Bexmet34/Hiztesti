@@ -17,12 +17,30 @@
         }
       },
       "required": ["email", "createdAt"]
+    },
+    "TestResult": {
+      "title": "TestResult",
+      "description": "A speed test result.",
+      "type": "object",
+      "properties": {
+        "download": { "type": "number" },
+        "upload": { "type": "number" },
+        "ping": { "type": "number" },
+        "jitter": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" }
+      },
+      "required": ["download", "upload", "ping", "jitter", "timestamp"]
     }
   },
   "firestore": {
     "/subscribers/{subscriberId}": {
       "schema": "Subscriber",
       "description": "Collection of email subscribers."
+    },
+    "/tests/{testId}": {
+      "schema": "TestResult",
+      "description": "Collection of speed test results."
     }
   }
 }
