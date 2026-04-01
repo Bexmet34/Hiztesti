@@ -1,0 +1,76 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: subscribers
+// Document ID: auto-generated
+// Fields:
+//   - email: string (required, email format) - The email address of the subscriber.
+//   - createdAt: timestamp (required) - The timestamp when the subscription was created.
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "hakkibsknn@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidSubscriber(data) {
+      return hasRequiredFields(['email', 'createdAt']) &&
+             hasOnlyAllowedFields(['email', 'createdAt']) &&
+             isValidEmail(data.email) &&
+             data.createdAt is timestamp &&
+             data.createdAt == request.time;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /subscribers/{subscriberId} {
+      // Allow anyone to subscribe, but with strict validation
+      allow create: if isValidSubscriber(request.resource.data);
+      
+      // Only admins can read the subscriber list
+      allow read, list: if isAdmin();
+      
+      // No updates or deletes allowed for subscribers via the app
+      allow update, delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

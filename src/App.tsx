@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useEffect, useRef, Component } from 'react';
+import { motion, AnimatePresence, useSpring } from 'motion/react';
 import { 
   Activity, 
   Download, 
@@ -47,7 +47,45 @@ interface NetworkInfo {
   org: string;
 }
 
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, addDoc, serverTimestamp, getDocFromServer, doc } from 'firebase/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Error Handling
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 export default function App() {
+  return <SpeedPulseApp />;
+}
+
+function SpeedPulseApp() {
   const [testState, setTestState] = useState<TestState>('idle');
   const [downloadSpeed, setDownloadSpeed] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState(0);
@@ -58,8 +96,26 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [networkInfo, setNetworkInfo] = useState<NetworkInfo | null>(null);
   const [isLoadingInfo, setIsLoadingInfo] = useState(true);
+  const [activeModal, setActiveModal] = useState<{ title: string, content: string } | null>(null);
+  const [email, setEmail] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   const testInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // Validate Connection to Firestore
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+  }, []);
 
   // Fetch Network Info
   useEffect(() => {
@@ -82,6 +138,28 @@ export default function App() {
     };
     fetchInfo();
   }, []);
+
+  const handleSubscribe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !email.includes('@')) return;
+
+    setIsSubmitting(true);
+    setSubscribeStatus('idle');
+
+    try {
+      await addDoc(collection(db, 'subscribers'), {
+        email,
+        createdAt: serverTimestamp()
+      });
+      setSubscribeStatus('success');
+      setEmail('');
+    } catch (error) {
+      setSubscribeStatus('error');
+      handleFirestoreError(error, OperationType.CREATE, 'subscribers');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const startTest = () => {
     setTestState('ping');
@@ -238,9 +316,9 @@ export default function App() {
           </div>
 
           {/* Test Gauge Card */}
-          <div className="glass rounded-[3rem] p-8 md:p-16 relative overflow-hidden shadow-2xl shadow-accent/5">
+          <div className="glass rounded-[3rem] p-6 md:p-10 relative overflow-hidden shadow-2xl shadow-accent/5 flex flex-col gap-8">
             {/* Progress Bar */}
-            <div className="absolute top-0 left-0 w-full h-1.5 bg-white/5">
+            <div className="absolute top-0 left-0 w-full h-1 bg-white/5">
               <motion.div 
                 className="h-full bg-gradient-to-r from-accent to-blue-400 glow-blue"
                 initial={{ width: 0 }}
@@ -249,7 +327,42 @@ export default function App() {
               />
             </div>
 
-            <div className="flex flex-col items-center justify-center py-8">
+            {/* Metrics Row - Moved to Top and Horizontal */}
+            <div className="flex flex-wrap md:flex-nowrap items-center justify-center gap-2 md:gap-4 px-2">
+              <MetricCard 
+                label="Ping" 
+                value={ping} 
+                unit="ms" 
+                icon={<Activity className="w-3 h-3" />} 
+                active={testState === 'ping'}
+              />
+              <MetricCard 
+                label="Jitter" 
+                value={jitter} 
+                unit="ms" 
+                icon={<RefreshCcw className="w-3 h-3" />} 
+                active={testState === 'ping'}
+              />
+              <div className="hidden md:block w-px h-8 bg-white/10 mx-2" />
+              <MetricCard 
+                label="Download" 
+                value={Math.round(downloadSpeed)} 
+                unit="Mbps" 
+                icon={<Download className="w-3 h-3" />} 
+                active={testState === 'download'}
+                highlight={testState === 'completed' || testState === 'upload'}
+              />
+              <MetricCard 
+                label="Upload" 
+                value={Math.round(uploadSpeed)} 
+                unit="Mbps" 
+                icon={<Upload className="w-3 h-3" />} 
+                active={testState === 'upload'}
+                highlight={testState === 'completed'}
+              />
+            </div>
+
+            <div className="flex flex-col items-center justify-center">
               <AnimatePresence mode="wait">
                 {testState === 'idle' ? (
                   <motion.button
@@ -258,12 +371,13 @@ export default function App() {
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 1.2, opacity: 0 }}
                     onClick={startTest}
-                    className="group relative w-56 h-56 rounded-full bg-accent flex flex-col items-center justify-center gap-2 text-white font-black text-3xl glow-blue hover:scale-105 transition-all duration-500 active:scale-95"
+                    className="group relative w-40 h-40 rounded-full bg-gradient-to-br from-red-600 to-red-800 flex flex-col items-center justify-center gap-1 text-white font-black text-xl shadow-[0_0_50px_rgba(220,38,38,0.3)] hover:shadow-[0_0_70px_rgba(220,38,38,0.5)] hover:scale-105 transition-all duration-500 active:scale-95 my-12 border-4 border-white/10"
                   >
-                    <Zap className="w-10 h-10 fill-white" />
-                    START
-                    <div className="absolute inset-[-12px] border border-accent/30 rounded-full animate-ping" />
-                    <div className="absolute inset-[-24px] border border-accent/10 rounded-full" />
+                    <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.2),transparent)]" />
+                    <Zap className="w-6 h-6 fill-white animate-pulse" />
+                    <span className="tracking-tighter">ENGINE</span>
+                    <span className="text-[10px] opacity-80 tracking-[0.3em] -mt-1">START</span>
+                    <div className="absolute inset-[-8px] border border-red-500/30 rounded-full animate-ping" />
                   </motion.button>
                 ) : (
                   <motion.div
@@ -272,114 +386,58 @@ export default function App() {
                     animate={{ opacity: 1, scale: 1 }}
                     className="flex flex-col items-center w-full"
                   >
-                    <div className="text-xs font-mono text-accent uppercase tracking-[0.4em] mb-8 bg-accent/10 px-4 py-1.5 rounded-full">
+                    <div className="text-[10px] font-mono text-accent uppercase tracking-[0.4em] mb-6 bg-accent/10 px-4 py-1 rounded-full border border-accent/20">
                       {testState === 'ping' && 'Initializing Connection...'}
                       {testState === 'download' && 'Testing Download Speed'}
                       {testState === 'upload' && 'Testing Upload Speed'}
                       {testState === 'completed' && 'Analysis Complete'}
                     </div>
                     
-                    <div className="relative w-64 h-64 md:w-80 md:h-80 flex items-center justify-center">
-                      {/* Circular Gauge Background */}
-                      <svg className="absolute inset-0 w-full h-full -rotate-90">
-                        <circle 
-                          cx="50%" cy="50%" r="48%" 
-                          fill="none" stroke="currentColor" 
-                          strokeWidth="4" className="text-white/5"
-                        />
-                        <motion.circle 
-                          cx="50%" cy="50%" r="48%" 
-                          fill="none" stroke="currentColor" 
-                          strokeWidth="8" className="text-accent"
-                          strokeDasharray="100 100"
-                          animate={{ strokeDashoffset: 100 - gaugePercentage }}
-                          transition={{ type: "spring", stiffness: 50, damping: 15 }}
-                          strokeLinecap="round"
-                        />
-                      </svg>
+                    <div className="relative w-72 h-72 md:w-[450px] md:h-[450px] flex items-center justify-center">
+                      <OrbitalGauge value={currentGaugeValue} max={maxGauge} state={testState} />
 
-                      <div className="relative flex flex-col items-center">
-                        <div className="flex items-baseline gap-2">
-                          <motion.span 
-                            key={currentGaugeValue}
-                            initial={{ y: 10, opacity: 0 }}
-                            animate={{ y: 0, opacity: 1 }}
-                            className="text-7xl md:text-8xl font-black tracking-tighter tabular-nums"
-                          >
-                            {Math.round(currentGaugeValue)}
-                          </motion.span>
-                          <span className="text-xl text-gray-500 font-bold">Mbps</span>
-                        </div>
-                        <div className="flex items-center gap-2 mt-2">
-                          {testState === 'download' ? <Download className="w-4 h-4 text-accent" /> : <Upload className="w-4 h-4 text-blue-400" />}
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                            {testState === 'download' ? 'Download' : testState === 'upload' ? 'Upload' : 'Result'}
-                          </span>
-                        </div>
+                      <div className="relative flex flex-col items-center z-10">
+                        <motion.div 
+                          initial={{ scale: 0.9, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className="flex flex-col items-center"
+                        >
+                          <div className="flex items-baseline gap-2">
+                            <Counter 
+                              value={Math.round(currentGaugeValue)} 
+                              className="text-7xl md:text-9xl font-black tracking-tighter tabular-nums text-white drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]"
+                            />
+                            <span className="text-xl md:text-2xl text-accent font-black uppercase tracking-widest">Mbps</span>
+                          </div>
+                          
+                          <div className="flex items-center gap-3 mt-2 px-6 py-2 bg-white/5 rounded-full border border-white/10 backdrop-blur-md">
+                            {testState === 'download' ? (
+                              <Download className="w-5 h-5 text-accent animate-bounce" />
+                            ) : (
+                              <Upload className="w-5 h-5 text-red-500 animate-bounce" />
+                            )}
+                            <span className="text-xs font-black uppercase tracking-[0.3em] text-gray-300">
+                              {testState === 'download' ? 'Downloading' : testState === 'upload' ? 'Uploading' : 'Final Result'}
+                            </span>
+                          </div>
+                        </motion.div>
                       </div>
                     </div>
 
-                    {/* Real-time Area Chart */}
-                    <div className="w-full h-40 mt-12">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={chartData}>
-                          <defs>
-                            <linearGradient id="colorSpeed" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <Area 
-                            type="monotone" 
-                            dataKey="speed" 
-                            stroke="#3B82F6" 
-                            strokeWidth={3} 
-                            fillOpacity={1} 
-                            fill="url(#colorSpeed)"
-                            isAnimationActive={false}
-                          />
-                          <YAxis hide domain={[0, 'auto']} />
-                          <XAxis hide />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
+                    {testState === 'completed' && (
+                      <motion.button
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        onClick={startTest}
+                        className="mt-4 px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-accent hover:border-accent transition-all duration-300 flex items-center gap-2 group"
+                      >
+                        <RefreshCcw className="w-3 h-3 group-hover:rotate-180 transition-transform duration-500" />
+                        Test Again
+                      </motion.button>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
-
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
-              <MetricCard 
-                label="Ping" 
-                value={ping} 
-                unit="ms" 
-                icon={<Activity className="w-4 h-4" />} 
-                active={testState === 'ping'}
-              />
-              <MetricCard 
-                label="Jitter" 
-                value={jitter} 
-                unit="ms" 
-                icon={<RefreshCcw className="w-4 h-4" />} 
-                active={testState === 'ping'}
-              />
-              <MetricCard 
-                label="Download" 
-                value={Math.round(downloadSpeed)} 
-                unit="Mbps" 
-                icon={<Download className="w-4 h-4" />} 
-                active={testState === 'download'}
-                highlight={testState === 'completed' || testState === 'upload'}
-              />
-              <MetricCard 
-                label="Upload" 
-                value={Math.round(uploadSpeed)} 
-                unit="Mbps" 
-                icon={<Upload className="w-4 h-4" />} 
-                active={testState === 'upload'}
-                highlight={testState === 'completed'}
-              />
             </div>
           </div>
 
@@ -415,10 +473,26 @@ export default function App() {
                 ADVANCED TOOLS
               </h2>
               <div className="grid grid-cols-2 gap-4">
-                <ServiceButton icon={<Wifi />} label="WiFi Scanner" />
-                <ServiceButton icon={<Server />} label="Node Status" />
-                <ServiceButton icon={<Shield />} label="DNS Leak" />
-                <ServiceButton icon={<Activity />} label="Packet Loss" />
+                <ServiceButton 
+                  icon={<Wifi />} 
+                  label="WiFi Scanner" 
+                  onClick={() => setActiveModal({ title: 'WiFi Scanner', content: 'Scan your local environment for signal interference, channel congestion, and optimal router placement. Our tool helps you identify the best frequency bands for your specific hardware.' })}
+                />
+                <ServiceButton 
+                  icon={<Server />} 
+                  label="Node Status" 
+                  onClick={() => setActiveModal({ title: 'Node Status', content: 'Check the real-time health of our global testing infrastructure. We maintain over 500 nodes across 6 continents to ensure low-latency measurements for all users.' })}
+                />
+                <ServiceButton 
+                  icon={<Shield />} 
+                  label="DNS Leak" 
+                  onClick={() => setActiveModal({ title: 'DNS Leak Test', content: 'Verify that your DNS queries are not leaking outside of your encrypted tunnel. Essential for VPN users to ensure complete privacy and anonymity online.' })}
+                />
+                <ServiceButton 
+                  icon={<Activity />} 
+                  label="Packet Loss" 
+                  onClick={() => setActiveModal({ title: 'Packet Loss Test', content: 'Measure the percentage of data packets that fail to reach their destination. High packet loss can cause stuttering in video calls and lag in online gaming.' })}
+                />
               </div>
             </div>
           </div>
@@ -467,49 +541,235 @@ export default function App() {
           <div>
             <h4 className="text-xs font-black uppercase tracking-widest text-white mb-6">Network Tools</h4>
             <ul className="space-y-3 text-sm text-gray-500 font-medium">
-              <li><a href="#" className="hover:text-accent transition-colors">Global Speed Test</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">Advanced Ping Analysis</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">Jitter & Packet Loss</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">ISP Comparison Map</a></li>
+              <li><button onClick={() => setActiveModal({ title: 'Global Speed Test', content: 'Our global network of over 500 servers ensures that you get the most accurate speed test results, no matter where you are in the world. We measure throughput using multiple concurrent streams to saturate your connection.' })} className="hover:text-accent transition-colors">Global Speed Test</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'Advanced Ping Analysis', content: 'Ping measures the round-trip time for messages sent from your host to a destination server. Our advanced analysis checks for consistency and routing efficiency across multiple global hops.' })} className="hover:text-accent transition-colors">Advanced Ping Analysis</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'Jitter & Packet Loss', content: 'Jitter is the variation in the delay of received packets. High jitter can cause issues in real-time applications like VoIP and gaming. Packet loss indicates data that fails to reach its destination.' })} className="hover:text-accent transition-colors">Jitter & Packet Loss</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'ISP Comparison Map', content: 'Compare your results with other users in your region. Our ISP map shows real-time performance data for major providers, helping you choose the best service for your needs.' })} className="hover:text-accent transition-colors">ISP Comparison Map</button></li>
             </ul>
           </div>
 
           <div>
             <h4 className="text-xs font-black uppercase tracking-widest text-white mb-6">Resources</h4>
             <ul className="space-y-3 text-sm text-gray-500 font-medium">
-              <li><a href="#" className="hover:text-accent transition-colors">Developer API</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">Network Glossary</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="hover:text-accent transition-colors">Terms of Use</a></li>
+              <li><button onClick={() => setActiveModal({ title: 'Developer API', content: 'Integrate SpeedPulse diagnostics into your own applications. Our REST API provides programmatic access to speed test results, network info, and historical performance data.' })} className="hover:text-accent transition-colors">Developer API</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'Network Glossary', content: 'Confused by Mbps vs MB/s? Our glossary defines common network terms like Latency, Bandwidth, Throughput, and more in plain English.' })} className="hover:text-accent transition-colors">Network Glossary</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'Privacy Policy', content: 'Your privacy is our priority. We mask your IP address and never store personally identifiable information. We only use anonymized data to improve global network mapping.' })} className="hover:text-accent transition-colors">Privacy Policy</button></li>
+              <li><button onClick={() => setActiveModal({ title: 'Terms of Use', content: 'By using SpeedPulse, you agree to our terms of service. Our tool is provided for personal and professional diagnostics. Commercial redistribution of our data requires an API license.' })} className="hover:text-accent transition-colors">Terms of Use</button></li>
             </ul>
           </div>
 
           <div>
             <h4 className="text-xs font-black uppercase tracking-widest text-white mb-6">Stay Connected</h4>
             <p className="text-sm text-gray-500 mb-6 font-medium">Subscribe for network health alerts.</p>
-            <div className="flex gap-2">
-              <input 
-                type="email" 
-                placeholder="Email address" 
-                className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm flex-1 focus:outline-none focus:border-accent transition-colors"
-              />
-              <button className="bg-accent text-white px-6 py-3 rounded-xl text-sm font-black glow-blue hover:scale-105 transition-transform">
-                JOIN
-              </button>
-            </div>
+            <form onSubmit={handleSubscribe} className="space-y-3">
+              <div className="flex gap-2">
+                <input 
+                  type="email" 
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Email address" 
+                  required
+                  className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm flex-1 focus:outline-none focus:border-accent transition-colors"
+                />
+                <button 
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="bg-accent text-white px-6 py-3 rounded-xl text-sm font-black glow-blue hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100"
+                >
+                  {isSubmitting ? '...' : 'JOIN'}
+                </button>
+              </div>
+              {subscribeStatus === 'success' && (
+                <p className="text-[10px] text-green-500 font-bold uppercase tracking-widest animate-pulse">Successfully subscribed!</p>
+              )}
+              {subscribeStatus === 'error' && (
+                <p className="text-[10px] text-red-500 font-bold uppercase tracking-widest">Subscription failed. Try again.</p>
+              )}
+            </form>
           </div>
         </div>
         <div className="container mx-auto mt-16 pt-8 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-6 text-[10px] font-bold uppercase tracking-widest text-gray-600">
           <p>© 2026 SpeedPulse Network. All rights reserved.</p>
           <div className="flex gap-8">
-            <a href="#" className="hover:text-gray-400">Twitter</a>
-            <a href="#" className="hover:text-gray-400">LinkedIn</a>
-            <a href="#" className="hover:text-gray-400">Status</a>
+            <button onClick={() => setActiveModal({ title: 'Twitter / X', content: 'Follow us @SpeedPulseApp for real-time network status updates, performance tips, and community highlights.' })} className="hover:text-gray-400 transition-colors">Twitter</button>
+            <button onClick={() => setActiveModal({ title: 'LinkedIn', content: 'Connect with SpeedPulse Network on LinkedIn for professional insights, infrastructure updates, and career opportunities.' })} className="hover:text-gray-400 transition-colors">LinkedIn</button>
+            <button onClick={() => setActiveModal({ title: 'System Status', content: 'All systems operational. Our global edge network is performing at 99.99% uptime. No current outages reported.' })} className="hover:text-gray-400 transition-colors">Status</button>
           </div>
         </div>
       </footer>
+
+      {/* Info Modal */}
+      <AnimatePresence>
+        {activeModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setActiveModal(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-lg glass rounded-[2.5rem] p-10 overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 w-full h-1.5 bg-accent" />
+              <button 
+                onClick={() => setActiveModal(null)}
+                className="absolute top-6 right-6 p-2 hover:bg-white/5 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+              
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 text-accent">
+                  <Info className="w-6 h-6" />
+                  <h3 className="text-2xl font-black tracking-tight">{activeModal.title}</h3>
+                </div>
+                <p className="text-gray-400 leading-relaxed font-medium">
+                  {activeModal.content}
+                </p>
+                <button 
+                  onClick={() => setActiveModal(null)}
+                  className="w-full py-4 bg-accent text-white font-black rounded-2xl glow-blue hover:scale-[1.02] transition-transform"
+                >
+                  GOT IT
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
+}
+
+function OrbitalGauge({ value, max, state }: { value: number, max: number, state: string }) {
+  const percentage = Math.min(100, (value / (max || 1)) * 100);
+  const isUpload = state === 'upload';
+  const color = isUpload ? '#EF4444' : '#3B82F6';
+
+  return (
+    <div className="absolute inset-0 w-full h-full flex items-center justify-center">
+      <div className="relative w-full h-full">
+        <svg viewBox="0 0 100 100" className="w-full h-full overflow-visible">
+          <defs>
+            <filter id="orbitalGlow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="2" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+            <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor={color} />
+              <stop offset="100%" stopColor={isUpload ? "#B91C1C" : "#1D4ED8"} />
+            </linearGradient>
+            <mask id="ringMask">
+              <circle cx="50" cy="50" r="42" fill="none" stroke="white" strokeWidth="8" strokeDasharray="1, 2" />
+            </mask>
+          </defs>
+
+          {/* Background Rings */}
+          <circle cx="50" cy="50" r="48" fill="none" stroke="rgba(255,255,255,0.02)" strokeWidth="0.5" />
+          <circle cx="50" cy="50" r="35" fill="none" stroke="rgba(255,255,255,0.02)" strokeWidth="0.5" />
+          
+          {/* Progress Track */}
+          <circle 
+            cx="50" cy="50" r="42" 
+            fill="none" 
+            stroke="rgba(255,255,255,0.05)" 
+            strokeWidth="8" 
+            mask="url(#ringMask)"
+          />
+
+          {/* Main Progress Ring */}
+          <motion.circle
+            cx="50"
+            cy="50"
+            r="42"
+            fill="none"
+            stroke="url(#ringGradient)"
+            strokeWidth="8"
+            strokeLinecap="round"
+            mask="url(#ringMask)"
+            style={{
+              pathLength: percentage / 100,
+              rotate: -90,
+              transformOrigin: "50% 50%",
+              filter: "url(#orbitalGlow)"
+            }}
+            transition={{ type: "spring", stiffness: 20, damping: 10 }}
+          />
+
+          {/* Scanning Beam */}
+          <motion.circle
+            cx="50"
+            cy="50"
+            r="42"
+            fill="none"
+            stroke={color}
+            strokeWidth="8"
+            strokeDasharray="10 100"
+            strokeLinecap="round"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+            style={{ transformOrigin: "50% 50%", opacity: 0.3 }}
+          />
+
+          {/* Data Particles */}
+          {[...Array(6)].map((_, i) => (
+            <motion.circle
+              key={i}
+              cx="50"
+              cy="50"
+              r={42}
+              fill={color}
+              animate={{
+                rotate: [0, 360],
+                opacity: [0, 1, 0],
+                scale: [0.5, 1.5, 0.5]
+              }}
+              transition={{
+                duration: 1.5,
+                repeat: Infinity,
+                ease: "easeInOut",
+                delay: i * 0.25
+              }}
+              style={{
+                transformOrigin: "50% 50%",
+                cx: 50 + 42 * Math.cos((i * 60 * Math.PI) / 180),
+                cy: 50 + 42 * Math.sin((i * 60 * Math.PI) / 180),
+                r: 1
+              }}
+            />
+          ))}
+        </svg>
+
+        {/* Ambient Glow Background */}
+        <div 
+          className="absolute inset-0 rounded-full blur-[120px] opacity-10 transition-colors duration-1000"
+          style={{ backgroundColor: color }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function Counter({ value, className }: { value: number, className?: string }) {
+  const springValue = useSpring(0, { stiffness: 50, damping: 15 });
+  const [displayValue, setDisplayValue] = useState(0);
+
+  useEffect(() => {
+    springValue.set(value);
+  }, [value, springValue]);
+
+  useEffect(() => {
+    return springValue.on("change", (latest) => {
+      setDisplayValue(Math.round(latest));
+    });
+  }, [springValue]);
+
+  return <span className={className}>{displayValue}</span>;
 }
 
 function MetricCard({ label, value, unit, icon, active, highlight }: { 
@@ -522,30 +782,30 @@ function MetricCard({ label, value, unit, icon, active, highlight }: {
 }) {
   return (
     <div className={cn(
-      "glass rounded-3xl p-5 flex flex-col gap-2 transition-all duration-700 relative overflow-hidden",
-      active && "border-accent ring-1 ring-accent/50 scale-105 z-10 shadow-2xl shadow-accent/20",
-      highlight && "border-success/30 bg-success/[0.02]"
+      "glass rounded-xl p-3 flex flex-col gap-0.5 transition-all duration-700 relative overflow-hidden flex-1 min-w-[80px]",
+      active && "border-accent ring-1 ring-accent/30 scale-105 z-10 shadow-xl shadow-accent/10 bg-accent/[0.05]",
+      highlight && "border-success/20 bg-success/[0.01]"
     )}>
       {active && (
         <motion.div 
-          className="absolute bottom-0 left-0 h-1 bg-accent"
+          className="absolute bottom-0 left-0 h-0.5 bg-accent"
           initial={{ width: 0 }}
           animate={{ width: '100%' }}
           transition={{ duration: 5, ease: "linear" }}
         />
       )}
-      <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-gray-500">
+      <div className="flex items-center justify-between text-[7px] font-black uppercase tracking-widest text-gray-500">
         {label}
         <span className={cn(active ? "text-accent" : "text-gray-600")}>{icon}</span>
       </div>
       <div className="flex items-baseline gap-1">
         <span className={cn(
-          "text-3xl font-black tabular-nums transition-colors",
+          "text-lg font-black tabular-nums transition-colors",
           active ? "text-accent" : highlight ? "text-success" : "text-white"
         )}>
           {value || '0'}
         </span>
-        <span className="text-[10px] text-gray-500 font-bold">{unit}</span>
+        <span className="text-[7px] text-gray-500 font-bold">{unit}</span>
       </div>
     </div>
   );
@@ -560,9 +820,12 @@ function InfoRow({ label, value }: { label: string, value: string }) {
   );
 }
 
-function ServiceButton({ icon, label }: { icon: React.ReactNode, label: string }) {
+function ServiceButton({ icon, label, onClick }: { icon: React.ReactNode, label: string, onClick?: () => void }) {
   return (
-    <button className="flex flex-col items-center justify-center gap-3 p-5 rounded-[2rem] bg-white/[0.02] border border-white/5 hover:border-accent/50 hover:bg-accent/[0.03] transition-all group">
+    <button 
+      onClick={onClick}
+      className="flex flex-col items-center justify-center gap-3 p-5 rounded-[2rem] bg-white/[0.02] border border-white/5 hover:border-accent/50 hover:bg-accent/[0.03] transition-all group"
+    >
       <div className="text-gray-500 group-hover:text-accent group-hover:scale-110 transition-all duration-500">
         {React.cloneElement(icon as React.ReactElement, { className: "w-6 h-6" })}
       </div>
