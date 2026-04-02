@@ -17,6 +17,7 @@ async function runDownloadTest(url: string, threads: number, duration: number, s
   const startTime = performance.now();
   let totalBytes = 0;
   let lastReportedBytes = 0;
+  let lastReportTime = performance.now();
   let activeThreads = threads;
   const controller = new AbortController();
 
@@ -48,15 +49,17 @@ async function runDownloadTest(url: string, threads: number, duration: number, s
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
-              if (value) {
-                totalBytes += value.length;
-                
-                // Report progress every 256KB or so to keep UI smooth
-                if (totalBytes - lastReportedBytes > 256 * 1024) {
-                   self.postMessage({ type: 'progress', bytes: totalBytes, timestamp: performance.now() });
-                   lastReportedBytes = totalBytes;
+                if (value) {
+                  totalBytes += value.length;
+                  
+                  const now = performance.now();
+                  // Report progress more frequently (every 32KB or 100ms)
+                  if (totalBytes - lastReportedBytes > 32 * 1024 || now - lastReportTime > 100) {
+                     self.postMessage({ type: 'progress', bytes: totalBytes, timestamp: now });
+                     lastReportedBytes = totalBytes;
+                     lastReportTime = now;
+                  }
                 }
-              }
               
               if (performance.now() - startTime >= duration) {
                 controller.abort();
@@ -91,26 +94,34 @@ async function runDownloadTest(url: string, threads: number, duration: number, s
 async function runUploadTest(url: string, threads: number, duration: number) {
   const startTime = performance.now();
   let totalBytes = 0;
+  let lastReportedBytes = 0;
+  let lastReportTime = performance.now();
   let activeThreads = threads;
   const controller = new AbortController();
 
-  // Safety timeout to ensure the test stops even if fetch hangs
+  // Safety timeout to ensure the test stops
   const safetyTimeout = setTimeout(() => {
     controller.abort();
   }, duration + 2000);
 
   console.log(`Starting upload test: ${url}, threads: ${threads}`);
 
-  // Create a large dummy buffer for upload
-  const chunkSize = 1024 * 1024; // 1MB
-  const chunk = new Uint8Array(chunkSize);
-  crypto.getRandomValues(chunk);
+  // Pre-generate a large buffer to slice from
+  const maxChunkSize = 10 * 1024 * 1024; // 10MB
+  const randomBuffer = new Uint8Array(maxChunkSize);
+  crypto.getRandomValues(randomBuffer);
 
   const threadFn = async (id: number) => {
+    // Start with a small chunk size (256KB) to quickly ramp up
+    let currentChunkSize = 256 * 1024; 
+
     try {
       while (performance.now() - startTime < duration && !controller.signal.aborted) {
         try {
+          const chunk = new Uint8Array(randomBuffer.buffer, 0, currentChunkSize);
           const cacheBuster = `?nocache=${Date.now()}-${Math.random()}`;
+          
+          const reqStart = performance.now();
           const response = await fetch(url + cacheBuster, {
             method: 'POST',
             body: chunk,
@@ -121,12 +132,24 @@ async function runUploadTest(url: string, threads: number, duration: number) {
           });
 
           if (response.ok) {
-            totalBytes += chunkSize;
-            self.postMessage({ type: 'progress', bytes: totalBytes, timestamp: performance.now() });
+            const reqTime = performance.now() - reqStart;
+            totalBytes += currentChunkSize;
+            
+            const now = performance.now();
+            if (totalBytes - lastReportedBytes > 0 || now - lastReportTime > 100) {
+              self.postMessage({ type: 'progress', bytes: totalBytes, timestamp: now });
+              lastReportedBytes = totalBytes;
+              lastReportTime = now;
+            }
+
+            // Dynamic chunk sizing: Target ~200ms per request for smooth updates without too much overhead
+            if (reqTime < 100 && currentChunkSize < maxChunkSize) {
+              currentChunkSize = Math.min(currentChunkSize * 2, maxChunkSize);
+            } else if (reqTime > 400 && currentChunkSize > 64 * 1024) {
+              currentChunkSize = Math.max(currentChunkSize / 2, 64 * 1024);
+            }
           } else {
-            console.warn(`Thread ${id} upload failed: ${response.status}`);
-            // Small delay on error
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 100));
           }
 
           if (performance.now() - startTime >= duration) {
@@ -135,9 +158,7 @@ async function runUploadTest(url: string, threads: number, duration: number) {
           }
         } catch (err) {
           if (err instanceof Error && err.name === 'AbortError') break;
-          console.error(`Thread ${id} upload error:`, err);
-          // Small delay on error
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 100));
         }
       }
     } finally {

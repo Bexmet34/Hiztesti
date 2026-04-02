@@ -138,6 +138,7 @@ function SpeedPulseApp() {
   // CPU Monitoring
   useEffect(() => {
     let frameId: number;
+    let lastUpdate = performance.now();
     const checkFps = () => {
       const now = performance.now();
       const delta = now - lastFrameTime.current;
@@ -147,8 +148,11 @@ function SpeedPulseApp() {
       fpsRef.current.push(currentFps);
       if (fpsRef.current.length > 60) fpsRef.current.shift();
       
-      const avgFps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
-      setFps(Math.round(avgFps));
+      if (now - lastUpdate > 1000) {
+        const avgFps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
+        setFps(Math.round(avgFps));
+        lastUpdate = now;
+      }
       
       frameId = requestAnimationFrame(checkFps);
     };
@@ -394,25 +398,30 @@ function SpeedPulseApp() {
 
     // 1. High-Precision Ping & Jitter (10 samples, HEAD requests)
     const pingSamples: number[] = [];
+    // Warm up request for Vercel cold starts
+    try { await fetch('/robots.txt', { method: 'HEAD', cache: 'no-store' }); } catch (e) {}
+    
     for (let i = 0; i < 10; i++) {
       const t0 = performance.now();
       try {
-        // Cache busting for ping
-        await fetch(`/api/ping?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
+        const response = await fetch(`/robots.txt?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const t1 = performance.now();
         pingSamples.push(t1 - t0);
       } catch (e) {
         console.error('Ping error:', e);
       }
       setProgress((i + 1) * 10);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 50));
     }
 
     if (pingSamples.length > 0) {
+      // Use minimum for ping (best case) and average for jitter
+      const minPing = Math.min(...pingSamples);
       const avgPing = pingSamples.reduce((a, b) => a + b, 0) / pingSamples.length;
       const jitterVal = Math.sqrt(pingSamples.map(x => Math.pow(x - avgPing, 2)).reduce((a, b) => a + b, 0) / pingSamples.length);
       
-      setPing(Number(avgPing.toFixed(2)));
+      setPing(Number(minPing.toFixed(2)));
       setJitter(Number(jitterVal.toFixed(2)));
     }
     
@@ -441,7 +450,7 @@ function SpeedPulseApp() {
     };
 
     const startTime = performance.now();
-    const warmUpDuration = 2000; 
+    const warmUpDuration = 1000; 
     const totalDuration = 10000; 
     
     // Timer to update progress even if speed is 0
@@ -487,38 +496,28 @@ function SpeedPulseApp() {
         if (elapsed > warmUpDuration) {
           samples.push({ bytes: e.data.bytes, time: now });
           
-          // Use a larger window for slow connections (3 seconds)
-          const windowStart = now - 3000; 
-          const windowSamples = samples.filter(s => s.time >= windowStart);
-          
-          if (windowSamples.length >= 2) {
-            const first = windowSamples[0];
-            const last = windowSamples[windowSamples.length - 1];
-            const bytesInWindow = last.bytes - first.bytes;
-            const timeInWindow = last.time - first.time;
-            
-            if (timeInWindow > 0) {
-              let mbps = (bytesInWindow * 8) / (timeInWindow / 1000) / 1000000;
-              mbps = mbps * 1.035; // Overhead adjustment
-
-              if (type === 'download') setDownloadSpeed(mbps);
-              else setUploadSpeed(mbps);
-              
-              setChartData(prev => [...prev, { time: elapsed, speed: mbps }].slice(-50));
-            }
-          } else if (samples.length >= 1) {
-            // Fallback for very slow connections: use total since warmUpDuration
+          if (samples.length >= 2) {
             const first = samples[0];
             const last = samples[samples.length - 1];
             const bytesSinceStart = last.bytes - first.bytes;
             const timeSinceStart = last.time - first.time;
             
-            if (timeSinceStart > 500) { // Only calculate if we have at least 0.5s of data
+            if (timeSinceStart > 100) {
               let mbps = (bytesSinceStart * 8) / (timeSinceStart / 1000) / 1000000;
-              mbps = mbps * 1.035;
+              mbps = mbps * 1.035; // Overhead adjustment
               
               if (type === 'download') setDownloadSpeed(mbps);
               else setUploadSpeed(mbps);
+              
+              // For chart, we can still use a smaller window to show fluctuations
+              const windowStart = now - 1000;
+              const windowSamples = samples.filter(s => s.time >= windowStart);
+              if (windowSamples.length >= 2) {
+                const wFirst = windowSamples[0];
+                const wLast = windowSamples[windowSamples.length - 1];
+                let wMbps = ((wLast.bytes - wFirst.bytes) * 8) / ((wLast.time - wFirst.time) / 1000) / 1000000 * 1.035;
+                setChartData(prev => [...prev, { time: elapsed, speed: wMbps }].slice(-50));
+              }
             }
           }
         }
@@ -1198,7 +1197,7 @@ function SpeedPulseApp() {
           <div className="flex gap-8">
             <button onClick={() => setActiveModal({ title: 'Privacy Policy', content: 'Your privacy is our priority. We mask your IP address and never store personally identifiable information.' })} className="hover:text-gray-400 transition-colors">Privacy</button>
             <button onClick={() => setActiveModal({ title: 'Terms of Use', content: 'By using SpeedPulse, you agree to our terms of service.' })} className="hover:text-gray-400 transition-colors">Terms</button>
-            <button onClick={() => setActiveModal({ title: 'Contact', content: 'Need help? Reach out to our support team at support@speedpulse.net' })} className="hover:text-gray-400 transition-colors">Contact</button>
+            <button onClick={() => setActiveModal({ title: 'Contact', content: 'Need help? Reach out to our support team at support@hiztesti.vercel.app' })} className="hover:text-gray-400 transition-colors">Contact</button>
           </div>
         </div>
       </footer>
@@ -1310,7 +1309,7 @@ function SpeedPulseApp() {
               <span className="text-[10px] font-bold uppercase tracking-widest">{networkInfo?.isp || 'Unknown ISP'}</span>
             </div>
             <div className="text-accent font-black text-xs uppercase tracking-[0.4em]">
-              speedpulse.net
+              hiztesti.vercel.app
             </div>
           </div>
         </div>
